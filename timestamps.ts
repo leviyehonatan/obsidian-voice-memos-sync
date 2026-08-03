@@ -113,16 +113,16 @@ export class TimestampPanel {
     const header = tsContainer.createDiv("vm-ts-header");
     header.setText("Timestamps");
 
-    // Live current-position row — click to insert
-    const currentRow = tsContainer.createDiv("vm-ts-row vm-ts-current-row");
-    currentRow.createDiv("vm-ts-time").setText(formatDuration(currentTime));
-    currentRow.createDiv("vm-ts-label").setText("\u2190 click to insert");
-    currentRow.addEventListener("click", () => {
-      if (this.onInsert) this.onInsert();
-    });
-
+    let currentRowInserted = false;
     for (let i = 0; i < timestamps.length; i++) {
       const ts = timestamps[i];
+
+      // insert live current-position row at sorted position
+      if (!currentRowInserted && currentTime < ts.timeSec) {
+        this.createCurrentRow(tsContainer, currentTime);
+        currentRowInserted = true;
+      }
+
       const row = tsContainer.createDiv("vm-ts-row");
       if (i === activeIdx) row.addClass("active");
 
@@ -133,6 +133,20 @@ export class TimestampPanel {
         if (this.onSeek) this.onSeek(ts.timeSec);
       });
     }
+
+    // after all timestamps or when list is empty
+    if (!currentRowInserted) {
+      this.createCurrentRow(tsContainer, currentTime);
+    }
+  }
+
+  private createCurrentRow(parent: HTMLElement, currentTime: number) {
+    const row = parent.createDiv("vm-ts-row vm-ts-current-row");
+    row.createDiv("vm-ts-time").setText(formatDuration(currentTime));
+    row.createDiv("vm-ts-label").setText("\u2190 click to insert");
+    row.addEventListener("click", () => {
+      if (this.onInsert) this.onInsert();
+    });
   }
 
   updateCurrentTime(currentTime: number) {
