@@ -1,0 +1,9 @@
+{
+  "id": "voice-memos-sync",
+  "name": "Voice Memos Sync",
+  "version": "1.0.0",
+  "minAppVersion": "1.0.0",
+  "description": "Sync Apple Voice Memos into your vault as Media Extended-compatible notes",
+  "author": "Nick",
+  "isDesktopOnly": true
+}
