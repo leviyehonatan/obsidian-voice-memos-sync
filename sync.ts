@@ -1,7 +1,6 @@
 import { Notice, Modal, App, Setting, TFile } from "obsidian";
 import { execFile } from "child_process";
 import { promisify } from "util";
-import { createHash } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import VoiceMemosSyncPlugin from "./main";
@@ -48,39 +47,8 @@ export class SyncEngine {
     const vaultBase = (this.plugin.app.vault.adapter as any).basePath;
     const audioDir = path.join(vaultBase, s.audioFolder);
     const notesDir = path.join(vaultBase, s.notesFolder);
-    const indexPath = path.join(vaultBase, "Index.md");
-
     await fs.promises.mkdir(audioDir, { recursive: true });
     await fs.promises.mkdir(notesDir, { recursive: true });
-
-    // Write/update Index upfront so user sees it immediately
-    const indexContent = `# Voice Memos Index
-
-\`\`\`dataview
-TABLE label, date, time_local, duration, original_file
-FROM "${s.notesFolder}"
-SORT date DESC
-\`\`\`
-`;
-    const newHash = createHash("md5").update(indexContent).digest("hex");
-    const onDiskHash = fs.existsSync(indexPath)
-      ? createHash("md5")
-          .update(fs.readFileSync(indexPath, "utf-8"))
-          .digest("hex")
-      : null;
-    const isNew = !onDiskHash;
-    const isUntouched = onDiskHash && s.indexHash && s.indexHash === onDiskHash;
-    const isEdited = onDiskHash && !isUntouched;
-    let writeIndex = isNew || isUntouched;
-    if (isEdited) {
-      writeIndex = await showIndexPrompt(this.plugin.app);
-    }
-    if (writeIndex) {
-      await fs.promises.writeFile(indexPath + ".tmp", indexContent, "utf-8");
-      await fs.promises.rename(indexPath + ".tmp", indexPath);
-      s.indexHash = newHash;
-      await this.plugin.saveSettings();
-    }
 
     const sqliteBin = await this.findBinary("sqlite3", [
       "/usr/bin/sqlite3",
@@ -492,46 +460,6 @@ class SyncResultsModal extends Modal {
   onClose() {
     this.contentEl.empty();
   }
-}
-
-class IndexUpdateModal extends Modal {
-  private resolve: (value: boolean) => void;
-
-  constructor(app: App, resolve: (value: boolean) => void) {
-    super(app);
-    this.resolve = resolve;
-  }
-
-  onOpen() {
-    const { contentEl } = this;
-    contentEl.createEl("h2", { text: "Index Update" });
-    contentEl.createEl("p", {
-      text: "A new version of the Voice Memos Index is available. Would you like to update it? Your custom edits will be lost.",
-    });
-    new Setting(contentEl)
-      .addButton((btn) =>
-        btn.setButtonText("Overwrite").setCta().onClick(() => {
-          this.resolve(true);
-          this.close();
-        })
-      )
-      .addButton((btn) =>
-        btn.setButtonText("Keep mine").onClick(() => {
-          this.resolve(false);
-          this.close();
-        })
-      );
-  }
-
-  onClose() {
-    this.resolve(false);
-  }
-}
-
-function showIndexPrompt(app: App): Promise<boolean> {
-  return new Promise((resolve) => {
-    new IndexUpdateModal(app, resolve).open();
-  });
 }
 
 // ---- Utilities ----

@@ -1,0 +1,17 @@
+{
+  "name": "voice-memos-sync",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "esbuild main.ts --bundle --format=cjs --platform=node --target=es2020 --external:obsidian --external:electron --outfile=main.js",
+    "dev": "npm run build -- --watch",
+    "copy-test": "cp main.js styles.css manifest.json /Volumes/triandafilo/voice-memos-sync-test/.obsidian/plugins/voice-memos-sync/",
+    "typecheck": "tsc --noEmit --skipLibCheck"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.25.0",
+    "obsidian": "latest",
+    "typescript": "^5.0.0"
+  }
+}

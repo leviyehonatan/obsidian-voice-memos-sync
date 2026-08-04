@@ -53,7 +53,7 @@ export async function insertTimestampInFile(
 
     const after = content.slice(bodyStart);
     const lines = after.split("\n");
-    const entry = `- ${ts}`;
+    const entry = `- ${ts} `;
 
     const existing: { line: string; sec: number; label: string }[] = [];
     for (let i = 0; i < lines.length; i++) {

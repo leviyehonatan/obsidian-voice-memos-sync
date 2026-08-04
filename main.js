@@ -1,3 +1,4 @@
+"use strict";
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -54,15 +55,13 @@ var CORE_DATA_EPOCH_OFFSET = 978307200;
 var import_obsidian = require("obsidian");
 var import_child_process = require("child_process");
 var import_util = require("util");
-var import_crypto = require("crypto");
 var fs = __toESM(require("fs"));
 var path2 = __toESM(require("path"));
 var execFileAsync = (0, import_util.promisify)(import_child_process.execFile);
 var SyncEngine = class {
-  plugin;
-  syncing = false;
-  cancel = false;
   constructor(plugin) {
+    this.syncing = false;
+    this.cancel = false;
     this.plugin = plugin;
   }
   async run() {
@@ -90,32 +89,8 @@ ${recordingsPath}`);
     const vaultBase = this.plugin.app.vault.adapter.basePath;
     const audioDir = path2.join(vaultBase, s.audioFolder);
     const notesDir = path2.join(vaultBase, s.notesFolder);
-    const indexPath = path2.join(vaultBase, "Index.md");
     await fs.promises.mkdir(audioDir, { recursive: true });
     await fs.promises.mkdir(notesDir, { recursive: true });
-    const indexContent = `# Voice Memos Index
-
-\`\`\`dataview
-TABLE label, date, time_local, duration, original_file
-FROM "${s.notesFolder}"
-SORT date DESC
-\`\`\`
-`;
-    const newHash = (0, import_crypto.createHash)("md5").update(indexContent).digest("hex");
-    const onDiskHash = fs.existsSync(indexPath) ? (0, import_crypto.createHash)("md5").update(fs.readFileSync(indexPath, "utf-8")).digest("hex") : null;
-    const isNew = !onDiskHash;
-    const isUntouched = onDiskHash && s.indexHash && s.indexHash === onDiskHash;
-    const isEdited = onDiskHash && !isUntouched;
-    let writeIndex = isNew || isUntouched;
-    if (isEdited) {
-      writeIndex = await showIndexPrompt(this.plugin.app);
-    }
-    if (writeIndex) {
-      await fs.promises.writeFile(indexPath + ".tmp", indexContent, "utf-8");
-      await fs.promises.rename(indexPath + ".tmp", indexPath);
-      s.indexHash = newHash;
-      await this.plugin.saveSettings();
-    }
     const sqliteBin = await this.findBinary("sqlite3", [
       "/usr/bin/sqlite3",
       "/opt/homebrew/bin/sqlite3"
@@ -424,10 +399,6 @@ tags:
   }
 };
 var SyncResultsModal = class extends import_obsidian.Modal {
-  errors;
-  convertedFiles;
-  newFiles;
-  skipDone;
   constructor(app, results) {
     super(app);
     this.errors = results.errors;
@@ -479,39 +450,6 @@ var SyncResultsModal = class extends import_obsidian.Modal {
     this.contentEl.empty();
   }
 };
-var IndexUpdateModal = class extends import_obsidian.Modal {
-  resolve;
-  constructor(app, resolve) {
-    super(app);
-    this.resolve = resolve;
-  }
-  onOpen() {
-    const { contentEl } = this;
-    contentEl.createEl("h2", { text: "Index Update" });
-    contentEl.createEl("p", {
-      text: "A new version of the Voice Memos Index is available. Would you like to update it? Your custom edits will be lost."
-    });
-    new import_obsidian.Setting(contentEl).addButton(
-      (btn) => btn.setButtonText("Overwrite").setCta().onClick(() => {
-        this.resolve(true);
-        this.close();
-      })
-    ).addButton(
-      (btn) => btn.setButtonText("Keep mine").onClick(() => {
-        this.resolve(false);
-        this.close();
-      })
-    );
-  }
-  onClose() {
-    this.resolve(false);
-  }
-};
-function showIndexPrompt(app) {
-  return new Promise((resolve) => {
-    new IndexUpdateModal(app, resolve).open();
-  });
-}
 function parseDatetime(zpath, zdate) {
   const m = zpath.match(/^(\d{4})(\d{2})(\d{2}) (\d{2})(\d{2})(\d{2})/);
   if (!m) {
@@ -551,16 +489,19 @@ var import_obsidian2 = require("obsidian");
 
 // player.ts
 var Miniplayer = class {
-  audioEl = null;
-  playBtn = null;
-  currentEl = null;
-  totalEl = null;
-  seekEl = null;
-  labelEl = null;
-  _label = null;
-  onTimeUpdate = null;
-  onEnded = null;
-  onError = null;
+  constructor() {
+    this.audioEl = null;
+    this.playBtn = null;
+    this.currentEl = null;
+    this.totalEl = null;
+    this.seekEl = null;
+    this.labelEl = null;
+    this._label = null;
+    this.onTimeUpdate = null;
+    this.onEnded = null;
+    this.onError = null;
+    this.onLabelClick = null;
+  }
   get label() {
     return this._label;
   }
@@ -581,6 +522,12 @@ var Miniplayer = class {
     const player = container.createDiv("vm-player");
     this.labelEl = player.createDiv("vm-player-label");
     this.labelEl.setText(label || "\u2014");
+    if (label) {
+      this.labelEl.addClass("vm-clickable");
+      this.labelEl.addEventListener("click", () => {
+        if (this.onLabelClick) this.onLabelClick();
+      });
+    }
     const controls = player.createDiv("vm-player-controls");
     this.playBtn = controls.createDiv("vm-player-play");
     this.playBtn.setText(
@@ -728,7 +675,7 @@ async function insertTimestampInFile(noteFile, sec, vault) {
     const bodyStart = fmEnd === -1 ? 0 : fmEnd + 4;
     const after = content.slice(bodyStart);
     const lines = after.split("\n");
-    const entry = `- ${ts}`;
+    const entry = `- ${ts} `;
     const existing = [];
     for (let i = 0; i < lines.length; i++) {
       const stripped = lines[i].replace(/^\s*-+\s*/, "").trim();
@@ -755,11 +702,13 @@ async function insertTimestampInFile(noteFile, sec, vault) {
   return { ts, timestamps: resultTimestamps };
 }
 var TimestampPanel = class {
-  container = null;
-  timestamps = [];
-  activeIdx = -1;
-  onSeek = null;
-  onInsert = null;
+  constructor() {
+    this.container = null;
+    this.timestamps = [];
+    this.activeIdx = -1;
+    this.onSeek = null;
+    this.onInsert = null;
+  }
   render(parent, timestamps, activeIdx, currentTime) {
     this.timestamps = timestamps;
     this.activeIdx = activeIdx;
@@ -827,20 +776,19 @@ function parseDurationSec(fm) {
   return 0;
 }
 var VoiceMemosListView = class extends import_obsidian2.ItemView {
-  plugin;
-  recordings = [];
-  sortKey = "date";
-  sortDir = "desc";
-  filterText = "";
-  playingLabel = null;
-  playingFile = null;
-  timestamps = [];
-  activeTsIdx = -1;
-  player = new Miniplayer();
-  tsPanel = new TimestampPanel();
-  _syncDebounce = 0;
   constructor(leaf, plugin) {
     super(leaf);
+    this.recordings = [];
+    this.sortKey = "date";
+    this.sortDir = "desc";
+    this.filterText = "";
+    this.playingLabel = null;
+    this.playingFile = null;
+    this.timestamps = [];
+    this.activeTsIdx = -1;
+    this.player = new Miniplayer();
+    this.tsPanel = new TimestampPanel();
+    this._syncDebounce = 0;
     this.plugin = plugin;
     this.player.onTimeUpdate = (currentTime, duration) => {
       this.tsPanel.updateCurrentTime(currentTime);
@@ -855,6 +803,9 @@ var VoiceMemosListView = class extends import_obsidian2.ItemView {
     };
     this.player.onError = (msg) => {
       new import_obsidian2.Notice(`Playback error: ${msg}`);
+    };
+    this.player.onLabelClick = () => {
+      if (this.playingFile) this.app.workspace.getLeaf().openFile(this.playingFile);
     };
     this.tsPanel.onSeek = (timeSec) => {
       this.player.currentTime = timeSec;
@@ -1136,7 +1087,6 @@ var import_child_process2 = require("child_process");
 var fs2 = __toESM(require("fs"));
 var path3 = __toESM(require("path"));
 var VoiceMemosSettingTab = class extends import_obsidian3.PluginSettingTab {
-  plugin;
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -1217,8 +1167,10 @@ var VoiceMemosSettingTab = class extends import_obsidian3.PluginSettingTab {
 
 // main.ts
 var VoiceMemosSyncPlugin = class extends import_obsidian4.Plugin {
-  settings;
-  statusBarItem = null;
+  constructor() {
+    super(...arguments);
+    this.statusBarItem = null;
+  }
   async onload() {
     await this.loadSettings();
     this.statusBarItem = this.addStatusBarItem();

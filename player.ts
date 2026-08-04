@@ -11,6 +11,7 @@ export class Miniplayer {
   onTimeUpdate: ((currentTime: number, duration: number) => void) | null = null;
   onEnded: (() => void) | null = null;
   onError: ((message: string) => void) | null = null;
+  onLabelClick: (() => void) | null = null;
 
   get label() { return this._label; }
 
@@ -27,6 +28,12 @@ export class Miniplayer {
 
     this.labelEl = player.createDiv("vm-player-label");
     this.labelEl.setText(label || "\u2014");
+    if (label) {
+      this.labelEl.addClass("vm-clickable");
+      this.labelEl.addEventListener("click", () => {
+        if (this.onLabelClick) this.onLabelClick();
+      });
+    }
 
     const controls = player.createDiv("vm-player-controls");
 

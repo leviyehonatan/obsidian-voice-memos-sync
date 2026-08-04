@@ -169,6 +169,14 @@
   margin-bottom: 4px;
 }
 
+.vm-player-label.vm-clickable {
+  cursor: pointer;
+}
+
+.vm-player-label.vm-clickable:hover {
+  color: var(--interactive-accent);
+}
+
 .vm-player-controls {
   display: flex;
   align-items: center;

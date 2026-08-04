@@ -77,6 +77,10 @@ export class VoiceMemosListView extends ItemView {
       new Notice(`Playback error: ${msg}`);
     };
 
+    this.player.onLabelClick = () => {
+      if (this.playingFile) this.app.workspace.getLeaf().openFile(this.playingFile);
+    };
+
     this.tsPanel.onSeek = (timeSec) => {
       this.player.currentTime = timeSec;
       if (this.player.paused) this.player.play();
