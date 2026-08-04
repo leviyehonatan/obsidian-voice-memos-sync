@@ -1,5 +1,6 @@
-import { ItemView, WorkspaceLeaf, TFile, Menu } from "obsidian";
+import { ItemView, WorkspaceLeaf, TFile, Menu, Notice } from "obsidian";
 import VoiceMemosSyncPlugin from "./main";
+import { SyncEngine } from "./sync";
 import { Miniplayer } from "./player";
 import {
   TimestampPanel,
@@ -72,6 +73,10 @@ export class VoiceMemosListView extends ItemView {
       this.render();
     };
 
+    this.player.onError = (msg) => {
+      new Notice(`Playback error: ${msg}`);
+    };
+
     this.tsPanel.onSeek = (timeSec) => {
       this.player.currentTime = timeSec;
       if (this.player.paused) this.player.play();
@@ -116,19 +121,21 @@ export class VoiceMemosListView extends ItemView {
     for (const file of files) {
       const meta = this.app.metadataCache.getFileCache(file);
       const fm = meta?.frontmatter;
-      if (!fm?.label) continue;
 
-      const audioMatch = fm.audio
+      const label = fm?.label || fm?.["mx-uid"] || file.basename;
+      if (!label) continue;
+
+      const audioMatch = fm?.audio
         ? typeof fm.audio === "string"
           ? fm.audio.match(/\[\[(.*?)\]\]/)
           : null
         : null;
 
       this.recordings.push({
-        label: fm.label,
-        date: fm.date || "",
-        time: fm.time_local || "",
-        durationSec: parseDurationSec(fm),
+        label,
+        date: fm?.date || "",
+        time: fm?.time_local || "",
+        durationSec: parseDurationSec(fm || {}),
         file,
         audioPath: audioMatch?.[1] || "",
       });
@@ -183,9 +190,24 @@ export class VoiceMemosListView extends ItemView {
       value: this.filterText,
     });
     filterInput.addEventListener("input", (e) => {
-      this.filterText = (e.target as HTMLInputElement).value.toLowerCase();
+      const input = e.target as HTMLInputElement;
+      const cursor = input.selectionStart;
+      this.filterText = input.value.toLowerCase();
       this.render();
+      const newInput = this.containerEl.querySelector(".vm-filter input") as HTMLInputElement;
+      if (newInput) {
+        newInput.focus();
+        newInput.setSelectionRange(cursor, cursor);
+      }
     });
+
+    if (this.filterText) {
+      const clearBtn = filterRow.createEl("button", { text: "\u2715", cls: "vm-filter-clear" });
+      clearBtn.addEventListener("click", () => {
+        this.filterText = "";
+        this.render();
+      });
+    }
 
     // Recordings list
     const list = container.createDiv("vm-list");
@@ -205,7 +227,7 @@ export class VoiceMemosListView extends ItemView {
       const row = list.createDiv("vm-row");
 
       const playBtn = row.createDiv("vm-play-btn");
-      const isPlaying = this.playingLabel === r.label;
+      const isPlaying = this.playingFile?.path === r.file.path;
       playBtn.setText(isPlaying ? "\u23F8" : "\u25B6");
       playBtn.addEventListener("click", () => this.togglePlay(r));
 
@@ -227,6 +249,15 @@ export class VoiceMemosListView extends ItemView {
 
       const meta = info.createDiv("vm-meta");
       meta.setText(`${r.date} \u00b7 ${formatDuration(r.durationSec)}`);
+
+      const repairBtn = row.createDiv("vm-repair-btn");
+      repairBtn.setText("\u21BB");
+      repairBtn.setAttr("aria-label", "Repair frontmatter");
+      repairBtn.addEventListener("click", async () => {
+        repairBtn.setText("\u23F3");
+        await new SyncEngine(this.plugin).repairFrontmatter(r.file);
+        repairBtn.setText("\u21BB");
+      });
     }
 
     // Timestamp list (between list and player)
@@ -297,7 +328,7 @@ export class VoiceMemosListView extends ItemView {
   }
 
   private async togglePlay(r: Recording) {
-    if (this.playingLabel === r.label) {
+    if (this.playingFile?.path === r.file.path) {
       this.player.pause();
       this.playingLabel = null;
       this.playingFile = null;
@@ -307,20 +338,30 @@ export class VoiceMemosListView extends ItemView {
       return;
     }
 
-    if (r.audioPath) {
+    if (!r.audioPath) {
+      new Notice("No audio file linked to this recording");
+      return;
+    }
+
+    try {
       const file = this.app.vault.getAbstractFileByPath(r.audioPath);
-      if (file) {
-        this.timestamps = await loadTimestamps(this.app.vault, r.file);
-        this.activeTsIdx = -1;
-
-        const resourcePath = this.app.vault.getResourcePath(file);
-        this.player.load(resourcePath, r.label);
-
-        this.playingLabel = r.label;
-        this.playingFile = r.file;
-        this.player.play();
-        this.render();
+      if (!file) {
+        new Notice(`Audio file not found: ${r.audioPath}`);
+        return;
       }
+
+      this.timestamps = await loadTimestamps(this.app.vault, r.file);
+      this.activeTsIdx = -1;
+
+      const resourcePath = this.app.vault.getResourcePath(file);
+      this.player.load(resourcePath, r.label);
+
+      this.playingLabel = r.label;
+      this.playingFile = r.file;
+      this.render();
+      this.player.play();
+    } catch (e) {
+      new Notice(`Playback failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 

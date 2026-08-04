@@ -132,6 +132,10 @@ SORT date DESC
       new import_obsidian.Notice(`ffmpeg not found: ${s.ffmpegPath}`);
       return;
     }
+    const ffprobeBin = await this.findBinary("ffprobe", [
+      "/opt/homebrew/bin/ffprobe",
+      "/usr/local/bin/ffprobe"
+    ]);
     this.plugin.setStatus("Voice Memos: reading database\u2026");
     const query = "SELECT ZPATH, ZDATE, ZDURATION, ZCUSTOMLABELFORSORTING FROM ZCLOUDRECORDING";
     let rows;
@@ -161,52 +165,89 @@ Open plugin settings and click "Grant Full Disk Access", then restart Obsidian.`
     let errorCount = 0;
     let processed = 0;
     const errors = [];
+    const convertedFiles = [];
+    const newFiles = [];
     for (const line of lines) {
       if (this.cancel) break;
       const parts2 = line.split("|");
       if (parts2.length < 4) continue;
-      const zpath = parts2[0];
+      const zpath = parts2[0].trim();
+      if (!zpath) continue;
+      const stem = zpath.replace(/\.(m4a|qta)$/i, "");
+      if (!stem || stem === "." || stem === "/") continue;
       const zdate = parseFloat(parts2[1]);
       const zduration = parseFloat(parts2[2]);
       const zlabel = parts2[3] || "";
-      const stem = zpath.replace(/\.(m4a|qta)$/i, "");
       const destAudio = path2.join(audioDir, stem + ".m4a");
       const destNote = path2.join(notesDir, stem + ".md");
-      if (fs.existsSync(destNote) && fs.existsSync(destAudio)) {
+      const audioExists = fs.existsSync(destAudio);
+      let needsEncode = !audioExists;
+      const isNewFile = !audioExists;
+      const sourceFile = path2.join(recordingsPath, zpath);
+      let inputFile = sourceFile;
+      if (audioExists && ffprobeBin) {
+        try {
+          const { stdout } = await execFileAsync(ffprobeBin, [
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=codec_name",
+            "-of",
+            "csv=p=0",
+            destAudio
+          ], { encoding: "utf-8" });
+          if (stdout.trim() === "alac") {
+            needsEncode = true;
+            inputFile = destAudio;
+          }
+        } catch {
+        }
+      }
+      if (fs.existsSync(destNote) && audioExists && !needsEncode) {
         skipDone++;
         processed++;
         continue;
       }
-      const ext = path2.extname(zpath).toLowerCase();
-      const sourceFile = path2.join(recordingsPath, zpath);
-      const audioExists = fs.existsSync(destAudio);
-      if (!fs.existsSync(sourceFile)) {
-        errorCount++;
-        processed++;
-        errors.push(`${zpath}: source file not found`);
-        continue;
+      if (needsEncode && inputFile === sourceFile) {
+        if (!fs.existsSync(sourceFile)) {
+          errorCount++;
+          processed++;
+          errors.push(`${zpath}: source file not found`);
+          continue;
+        }
+        const srcStat = fs.statSync(sourceFile);
+        if (!srcStat.isFile()) {
+          errorCount++;
+          processed++;
+          errors.push(`${zpath}: source is not a regular file`);
+          continue;
+        }
       }
       this.plugin.setStatus(
-        `Voice Memos: ${processed}/${total} \xB7 ${ext === ".qta" ? "Remuxing" : "Copying"} ${zpath}`
+        `Voice Memos: ${processed}/${total} \xB7 ${needsEncode ? isNewFile ? "New" : "Re-encoding" : "Updating note"} ${zpath}`
       );
-      if (!audioExists) {
+      if (needsEncode) {
         try {
-          if (ext === ".qta") {
-            await execFileAsync(ffmpegBin, [
-              "-y",
-              "-i",
-              sourceFile,
-              "-c:a",
-              "copy",
-              "-map",
-              "0:a:0",
-              destAudio.replace(/\.m4a$/, ".tmp.m4a")
-            ]);
-            await fs.promises.rename(destAudio.replace(/\.m4a$/, ".tmp.m4a"), destAudio);
-            remuxCount++;
+          await execFileAsync(ffmpegBin, [
+            "-y",
+            "-i",
+            inputFile,
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-map",
+            "0:a:0",
+            destAudio.replace(/\.m4a$/, ".tmp.m4a")
+          ]);
+          await fs.promises.rename(destAudio.replace(/\.m4a$/, ".tmp.m4a"), destAudio);
+          remuxCount++;
+          if (isNewFile) {
+            newFiles.push(stem);
           } else {
-            await fs.promises.copyFile(sourceFile, destAudio.replace(/\.m4a$/, ".tmp.m4a"));
-            await fs.promises.rename(destAudio.replace(/\.m4a$/, ".tmp.m4a"), destAudio);
+            convertedFiles.push(stem);
           }
         } catch (e) {
           try {
@@ -215,7 +256,7 @@ Open plugin settings and click "Grant Full Disk Access", then restart Obsidian.`
           }
           errorCount++;
           processed++;
-          errors.push(`${zpath}: audio ${ext === ".qta" ? "remux" : "copy"} failed \u2014 ${e.message || String(e)}`);
+          errors.push(`${zpath}: audio conversion failed \u2014 ${e.message || String(e)}`);
           continue;
         }
       }
@@ -266,16 +307,109 @@ tags:
     const parts = [];
     if (newCount > 0) parts.push(`${newCount} new`);
     if (skipDone > 0) parts.push(`${skipDone} skipped`);
-    if (remuxCount > 0) parts.push(`${remuxCount} remuxed`);
+    if (remuxCount > 0) parts.push(`${remuxCount} converted`);
     if (errorCount > 0) parts.push(`${errorCount} errors`);
     const summary = parts.length > 0 ? `Voice Memos: ${parts.join(", ")}` : "Voice Memos: up to date";
     const cancelled = this.cancel ? " (cancelled)" : "";
     this.plugin.setStatus(summary + cancelled);
     this.plugin.clearStatus(8e3);
     new import_obsidian.Notice(summary + cancelled);
-    if (errors.length > 0) {
-      new SyncErrorsModal(this.plugin.app, errors).open();
+    setTimeout(() => this.plugin.refreshView(), 250);
+    if (errors.length > 0 || convertedFiles.length > 0 || newFiles.length > 0) {
+      new SyncResultsModal(this.plugin.app, { errors, convertedFiles, newFiles, skipDone }).open();
     }
+  }
+  async repairFrontmatter(file) {
+    const s = this.plugin.settings;
+    const content = await this.plugin.app.vault.read(file);
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    if (!fmMatch) {
+      new import_obsidian.Notice("No frontmatter found");
+      return;
+    }
+    const fmRaw = fmMatch[1];
+    const mxMatch = fmRaw.match(/mx-uid:\s*"?(.+?)"?\s*$/m);
+    const stem = mxMatch?.[1] || file.basename;
+    const body = content.slice(fmMatch.index + fmMatch[0].length);
+    const dbPath = path2.join(s.recordingsPath, "CloudRecordings.db");
+    if (!fs.existsSync(dbPath)) {
+      new import_obsidian.Notice(`Database not found: ${dbPath}`);
+      return;
+    }
+    const sqliteBin = await this.findBinary("sqlite3", [
+      "/usr/bin/sqlite3",
+      "/opt/homebrew/bin/sqlite3"
+    ]);
+    if (!sqliteBin) {
+      new import_obsidian.Notice("sqlite3 not found");
+      return;
+    }
+    const query = `SELECT ZPATH, ZDATE, ZDURATION, ZCUSTOMLABELFORSORTING FROM ZCLOUDRECORDING WHERE ZPATH LIKE '${stem}.%'`;
+    let zpath = "", zdate = 0, zduration = 0, zlabel = "";
+    try {
+      const result = await execFileAsync(sqliteBin, [dbPath, query], { encoding: "utf-8" });
+      const dbRows = result.stdout.trim().split("\n").filter((l) => l.includes("|"));
+      if (dbRows.length > 0) {
+        const parts = dbRows[0].split("|");
+        zpath = parts[0].trim();
+        zdate = parseFloat(parts[1]) || 0;
+        zduration = parseFloat(parts[2]) || 0;
+        zlabel = (parts[3] || "").trim();
+      }
+    } catch {
+    }
+    if (!zpath) {
+      new import_obsidian.Notice(`Recording "${stem}" not found in database`);
+      return;
+    }
+    let durationSec = zduration;
+    const vaultBase = this.plugin.app.vault.adapter.basePath;
+    const audioPath = path2.join(vaultBase, s.audioFolder, stem + ".m4a");
+    if (fs.existsSync(audioPath)) {
+      try {
+        const ffprobeBin = await this.findBinary("ffprobe", [
+          "/opt/homebrew/bin/ffprobe",
+          "/usr/local/bin/ffprobe"
+        ]);
+        if (ffprobeBin) {
+          const probe = await execFileAsync(ffprobeBin, [
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "csv=p=0",
+            audioPath
+          ], { encoding: "utf-8" });
+          const parsed = parseFloat(probe.stdout);
+          if (parsed > 0) durationSec = parsed;
+        }
+      } catch {
+      }
+    }
+    const dt = parseDatetime(zpath, zdate);
+    const dur = formatDuration(durationSec);
+    const label = zlabel || stem;
+    const audioRel = `${s.audioFolder}/${stem}.m4a`;
+    const newFm = `---
+mx-uid: "${stem}"
+audio: "[[${audioRel}]]"
+duration: "${dur}"
+duration_sec: ${durationSec}
+date: ${dt.date}
+time_local: ${dt.timeLocal}
+time_utc: ${dt.timeUtc}
+timezone_offset: "${dt.tzOffset}"
+label: "${label.replace(/"/g, '\\"')}"
+original_file: "${zpath}"
+tags:
+  - voice-memo
+---
+
+`;
+    await this.plugin.app.vault.modify(file, newFm + body);
+    new import_obsidian.Notice(`Repaired "${label}"`);
+    this.plugin.refreshView();
   }
   async findBinary(name, fallbacks) {
     for (const bin of [name, ...fallbacks]) {
@@ -289,25 +423,54 @@ tags:
     return null;
   }
 };
-var SyncErrorsModal = class extends import_obsidian.Modal {
+var SyncResultsModal = class extends import_obsidian.Modal {
   errors;
-  constructor(app, errors) {
+  convertedFiles;
+  newFiles;
+  skipDone;
+  constructor(app, results) {
     super(app);
-    this.errors = errors;
+    this.errors = results.errors;
+    this.convertedFiles = results.convertedFiles;
+    this.newFiles = results.newFiles;
+    this.skipDone = results.skipDone;
   }
   onOpen() {
     const { contentEl } = this;
     contentEl.addClass("vm-errors-modal");
-    contentEl.createEl("h2", { text: `Sync Errors (${this.errors.length})` });
-    contentEl.createEl("p", {
-      text: "These files will be retried on the next sync.",
-      cls: "vm-errors-hint"
-    });
-    const pre = contentEl.createEl("pre", { cls: "vm-errors-list" });
-    pre.setText(this.errors.join("\n"));
+    if (this.newFiles.length > 0) {
+      contentEl.createEl("h3", { text: `New (${this.newFiles.length})` });
+      const pre = contentEl.createEl("pre", { cls: "vm-errors-list" });
+      pre.setText(this.newFiles.join("\n"));
+    }
+    if (this.convertedFiles.length > 0) {
+      contentEl.createEl("h3", { text: `Re-encoded ALAC \u2192 AAC (${this.convertedFiles.length})` });
+      const pre = contentEl.createEl("pre", { cls: "vm-errors-list" });
+      pre.setText(this.convertedFiles.join("\n"));
+    }
+    if (this.skipDone > 0) {
+      contentEl.createEl("p", {
+        text: `${this.skipDone} files skipped (already synced)`,
+        cls: "vm-errors-hint"
+      });
+    }
+    if (this.errors.length > 0) {
+      contentEl.createEl("h3", { text: `Errors (${this.errors.length})` });
+      contentEl.createEl("p", {
+        text: "These files will be retried on the next sync.",
+        cls: "vm-errors-hint"
+      });
+      const pre = contentEl.createEl("pre", { cls: "vm-errors-list" });
+      pre.setText(this.errors.join("\n"));
+    }
+    const allText = [
+      ...this.newFiles.map((f) => `[NEW] ${f}`),
+      ...this.convertedFiles.map((f) => `[CONV] ${f}`),
+      ...this.errors
+    ].join("\n");
     new import_obsidian.Setting(contentEl).addButton(
       (btn) => btn.setButtonText("Copy to clipboard").setCta().onClick(async () => {
-        await navigator.clipboard.writeText(this.errors.join("\n"));
+        await navigator.clipboard.writeText(allText);
         new import_obsidian.Notice("Copied!");
       })
     );
@@ -397,6 +560,7 @@ var Miniplayer = class {
   _label = null;
   onTimeUpdate = null;
   onEnded = null;
+  onError = null;
   get label() {
     return this._label;
   }
@@ -443,7 +607,10 @@ var Miniplayer = class {
     this.attachAudio(container);
   }
   play() {
-    this.audioEl?.play();
+    if (!this.audioEl) return;
+    this.audioEl.play().catch((e) => {
+      if (this.onError) this.onError(e instanceof Error ? e.message : String(e));
+    });
     if (this.playBtn) this.playBtn.setText("\u23F8");
   }
   pause() {
@@ -456,7 +623,11 @@ var Miniplayer = class {
     else this.pause();
   }
   load(src, label) {
-    if (!this.audioEl) return;
+    if (!this.audioEl) {
+      console.warn("[VoiceMemos] load: no audio element");
+      return;
+    }
+    console.log("[VoiceMemos] load:", label, "src:", src.substring(0, 80));
     this.audioEl.src = src;
     this._label = label;
     if (this.labelEl) this.labelEl.setText(label || "\u2014");
@@ -473,7 +644,7 @@ var Miniplayer = class {
     if (this.audioEl) {
       container.appendChild(this.audioEl);
     } else {
-      this.audioEl = container.createEl("audio");
+      this.audioEl = container.createEl("audio", { attr: { preload: "auto" } });
       this.audioEl.addEventListener("timeupdate", () => {
         if (!this.audioEl || !this.currentEl || !this.seekEl || !this.totalEl) return;
         const { currentTime, duration } = this.audioEl;
@@ -682,6 +853,9 @@ var VoiceMemosListView = class extends import_obsidian2.ItemView {
       this.activeTsIdx = -1;
       this.render();
     };
+    this.player.onError = (msg) => {
+      new import_obsidian2.Notice(`Playback error: ${msg}`);
+    };
     this.tsPanel.onSeek = (timeSec) => {
       this.player.currentTime = timeSec;
       if (this.player.paused) this.player.play();
@@ -723,13 +897,14 @@ var VoiceMemosListView = class extends import_obsidian2.ItemView {
     for (const file of files) {
       const meta = this.app.metadataCache.getFileCache(file);
       const fm = meta?.frontmatter;
-      if (!fm?.label) continue;
-      const audioMatch = fm.audio ? typeof fm.audio === "string" ? fm.audio.match(/\[\[(.*?)\]\]/) : null : null;
+      const label = fm?.label || fm?.["mx-uid"] || file.basename;
+      if (!label) continue;
+      const audioMatch = fm?.audio ? typeof fm.audio === "string" ? fm.audio.match(/\[\[(.*?)\]\]/) : null : null;
       this.recordings.push({
-        label: fm.label,
-        date: fm.date || "",
-        time: fm.time_local || "",
-        durationSec: parseDurationSec(fm),
+        label,
+        date: fm?.date || "",
+        time: fm?.time_local || "",
+        durationSec: parseDurationSec(fm || {}),
         file,
         audioPath: audioMatch?.[1] || ""
       });
@@ -774,9 +949,23 @@ var VoiceMemosListView = class extends import_obsidian2.ItemView {
       value: this.filterText
     });
     filterInput.addEventListener("input", (e) => {
-      this.filterText = e.target.value.toLowerCase();
+      const input = e.target;
+      const cursor = input.selectionStart;
+      this.filterText = input.value.toLowerCase();
       this.render();
+      const newInput = this.containerEl.querySelector(".vm-filter input");
+      if (newInput) {
+        newInput.focus();
+        newInput.setSelectionRange(cursor, cursor);
+      }
     });
+    if (this.filterText) {
+      const clearBtn = filterRow.createEl("button", { text: "\u2715", cls: "vm-filter-clear" });
+      clearBtn.addEventListener("click", () => {
+        this.filterText = "";
+        this.render();
+      });
+    }
     const list = container.createDiv("vm-list");
     const filtered = this.recordings.filter(
       (r) => !this.filterText || r.label.toLowerCase().includes(this.filterText) || r.date.includes(this.filterText)
@@ -787,7 +976,7 @@ var VoiceMemosListView = class extends import_obsidian2.ItemView {
     for (const r of filtered) {
       const row = list.createDiv("vm-row");
       const playBtn = row.createDiv("vm-play-btn");
-      const isPlaying = this.playingLabel === r.label;
+      const isPlaying = this.playingFile?.path === r.file.path;
       playBtn.setText(isPlaying ? "\u23F8" : "\u25B6");
       playBtn.addEventListener("click", () => this.togglePlay(r));
       const info = row.createDiv("vm-info");
@@ -807,6 +996,14 @@ var VoiceMemosListView = class extends import_obsidian2.ItemView {
       });
       const meta = info.createDiv("vm-meta");
       meta.setText(`${r.date} \xB7 ${formatDuration4(r.durationSec)}`);
+      const repairBtn = row.createDiv("vm-repair-btn");
+      repairBtn.setText("\u21BB");
+      repairBtn.setAttr("aria-label", "Repair frontmatter");
+      repairBtn.addEventListener("click", async () => {
+        repairBtn.setText("\u23F3");
+        await new SyncEngine(this.plugin).repairFrontmatter(r.file);
+        repairBtn.setText("\u21BB");
+      });
     }
     if (this.playingLabel) {
       this.tsPanel.render(
@@ -864,7 +1061,7 @@ var VoiceMemosListView = class extends import_obsidian2.ItemView {
     this.render();
   }
   async togglePlay(r) {
-    if (this.playingLabel === r.label) {
+    if (this.playingFile?.path === r.file.path) {
       this.player.pause();
       this.playingLabel = null;
       this.playingFile = null;
@@ -873,18 +1070,26 @@ var VoiceMemosListView = class extends import_obsidian2.ItemView {
       this.render();
       return;
     }
-    if (r.audioPath) {
+    if (!r.audioPath) {
+      new import_obsidian2.Notice("No audio file linked to this recording");
+      return;
+    }
+    try {
       const file = this.app.vault.getAbstractFileByPath(r.audioPath);
-      if (file) {
-        this.timestamps = await loadTimestamps(this.app.vault, r.file);
-        this.activeTsIdx = -1;
-        const resourcePath = this.app.vault.getResourcePath(file);
-        this.player.load(resourcePath, r.label);
-        this.playingLabel = r.label;
-        this.playingFile = r.file;
-        this.player.play();
-        this.render();
+      if (!file) {
+        new import_obsidian2.Notice(`Audio file not found: ${r.audioPath}`);
+        return;
       }
+      this.timestamps = await loadTimestamps(this.app.vault, r.file);
+      this.activeTsIdx = -1;
+      const resourcePath = this.app.vault.getResourcePath(file);
+      this.player.load(resourcePath, r.label);
+      this.playingLabel = r.label;
+      this.playingFile = r.file;
+      this.render();
+      this.player.play();
+    } catch (e) {
+      new import_obsidian2.Notice(`Playback failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
   computeActiveTimestamp(currentTime) {
@@ -1085,6 +1290,14 @@ var VoiceMemosSyncPlugin = class extends import_obsidian4.Plugin {
     const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0];
     if (leaf) {
       leaf.view.playFromLink(audioPath, seekSec);
+    }
+  }
+  refreshView() {
+    const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0];
+    if (leaf?.view) {
+      const view = leaf.view;
+      view.loadRecordings();
+      view.render();
     }
   }
 };

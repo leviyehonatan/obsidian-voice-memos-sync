@@ -10,6 +10,7 @@ export class Miniplayer {
 
   onTimeUpdate: ((currentTime: number, duration: number) => void) | null = null;
   onEnded: (() => void) | null = null;
+  onError: ((message: string) => void) | null = null;
 
   get label() { return this._label; }
 
@@ -59,7 +60,10 @@ export class Miniplayer {
   }
 
   play() {
-    this.audioEl?.play();
+    if (!this.audioEl) return;
+    this.audioEl.play().catch((e) => {
+      if (this.onError) this.onError(e instanceof Error ? e.message : String(e));
+    });
     if (this.playBtn) this.playBtn.setText("\u23F8");
   }
 
@@ -75,7 +79,11 @@ export class Miniplayer {
   }
 
   load(src: string, label: string | null) {
-    if (!this.audioEl) return;
+    if (!this.audioEl) {
+      console.warn("[VoiceMemos] load: no audio element");
+      return;
+    }
+    console.log("[VoiceMemos] load:", label, "src:", src.substring(0, 80));
     this.audioEl.src = src;
     this._label = label;
     if (this.labelEl) this.labelEl.setText(label || "\u2014");
@@ -95,7 +103,7 @@ export class Miniplayer {
     if (this.audioEl) {
       container.appendChild(this.audioEl);
     } else {
-      this.audioEl = container.createEl("audio");
+      this.audioEl = container.createEl("audio", { attr: { preload: "auto" } });
 
       this.audioEl.addEventListener("timeupdate", () => {
         if (!this.audioEl || !this.currentEl || !this.seekEl || !this.totalEl) return;

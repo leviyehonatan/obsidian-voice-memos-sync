@@ -98,4 +98,13 @@ export default class VoiceMemosSyncPlugin extends Plugin {
       (leaf.view as VoiceMemosListView).playFromLink(audioPath, seekSec);
     }
   }
+
+  refreshView() {
+    const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0];
+    if (leaf?.view) {
+      const view = leaf.view as VoiceMemosListView;
+      view.loadRecordings();
+      view.render();
+    }
+  }
 }
